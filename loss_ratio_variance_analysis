@@ -1,1 +1,47 @@
 
+-- 1) Overall KPIs
+SELECT
+  COUNT(DISTINCT policy_id) AS policies,
+  SUM(premium_amount) AS total_premium,
+  SUM(claim_amount) AS total_claims,
+  ROUND(SUM(claim_amount) / NULLIF(SUM(premium_amount),0), 4) AS loss_ratio
+FROM policies;
+
+-- 2) Loss ratio by segment (example: state + product)
+SELECT
+  state,
+  product_type,
+  COUNT(DISTINCT policy_id) AS policies,
+  SUM(premium_amount) AS premium,
+  SUM(claim_amount) AS claims,
+  ROUND(SUM(claim_amount) / NULLIF(SUM(premium_amount),0), 4) AS loss_ratio
+FROM policies
+GROUP BY state, product_type
+ORDER BY loss_ratio DESC;
+
+-- 3) Variance vs overall baseline loss ratio
+WITH baseline AS (
+  SELECT SUM(claim_amount) / NULLIF(SUM(premium_amount),0) AS base_lr
+  FROM policies
+),
+seg AS (
+  SELECT
+    state,
+    product_type,
+    SUM(premium_amount) AS premium,
+    SUM(claim_amount) AS claims,
+    SUM(claim_amount) / NULLIF(SUM(premium_amount),0) AS seg_lr
+  FROM policies
+  GROUP BY state, product_type
+)
+SELECT
+  s.state,
+  s.product_type,
+  s.premium,
+  s.claims,
+  ROUND(s.seg_lr, 4) AS seg_loss_ratio,
+  ROUND(b.base_lr, 4) AS baseline_loss_ratio,
+  ROUND(s.seg_lr - b.base_lr, 4) AS lr_variance
+FROM seg s
+CROSS JOIN baseline b
+ORDER BY lr_variance DESC;
