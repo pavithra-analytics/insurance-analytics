@@ -1,0 +1,85 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, classification_report
+
+# 1) Load CSV
+df = pd.read_csv("data_synthetic.csv")  # <-- rename to your downloaded file
+
+# 2) COLUMN MAPPING
+# Required numeric fields:
+COL_POLICY_ID = "policy_id"
+COL_PREMIUM   = "premium_amount"
+COL_CLAIMS    = "claim_amount"
+
+# Optional but useful:
+COL_STATE     = "state"
+COL_PRODUCT   = "product_type"
+COL_CHANNEL   = "channel"
+COL_AGE       = "age"
+COL_GENDER    = "gender"
+
+# 3) Basic cleaning
+for c in [COL_PREMIUM, COL_CLAIMS]:
+    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+# 4) Define label: "high loss policy"
+# Example: high loss if claim/premium >= 0.8 (tune threshold)
+df["loss_ratio"] = np.where(df[COL_PREMIUM] > 0, df[COL_CLAIMS] / df[COL_PREMIUM], 0.0)
+df["y_high_loss"] = (df["loss_ratio"] >= 0.8).astype(int)
+
+# 5) Feature set (keep it simple)
+num_features = [COL_PREMIUM, COL_AGE]
+cat_features = [COL_STATE, COL_PRODUCT, COL_CHANNEL, COL_GENDER]
+for c in num_features + cat_features:
+    if c not in df.columns:
+        df[c] = np.nan
+
+X = df[num_features + cat_features].copy()
+y = df["y_high_loss"].copy()
+
+# 6) Train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42, stratify=y
+)
+
+# 7) Pipeline: one-hot encode categoricals + logistic regression
+preprocess = ColumnTransformer(
+    transformers=[
+        ("num", "passthrough", num_features),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
+    ]
+)
+
+model = Pipeline(
+    steps=[
+        ("prep", preprocess),
+        ("clf", LogisticRegression(max_iter=1000))
+    ]
+)
+
+model.fit(X_train, y_train)
+pred_proba = model.predict_proba(X_test)[:, 1]
+pred = (pred_proba >= 0.5).astype(int)
+
+print("AUC:", roc_auc_score(y_test, pred_proba))
+print(classification_report(y_test, pred))
+
+# 8) Export coefficients for SQL scoring
+# Get feature names from the pipeline
+ohe = model.named_steps["prep"].named_transformers_["cat"]
+cat_names = ohe.get_feature_names_out(cat_features)
+feature_names = num_features + list(cat_names)
+
+coefs = model.named_steps["clf"].coef_[0]
+intercept = model.named_steps["clf"].intercept_[0]
+
+coef_df = pd.DataFrame({"feature_name": feature_names, "coef": coefs})
+coef_df = pd.concat([pd.DataFrame({"feature_name": ["__INTERCEPT__"], "coef": [intercept]}), coef_df], ignore_index=True)
+
+coef_df.to_csv("coefficients.csv", index=False)
+print("Wrote coefficients.csv")
